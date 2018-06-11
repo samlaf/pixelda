@@ -10,6 +10,11 @@ import torch.nn as nn
 import numpy as np
 from torch.autograd import Variable
 
+def get_n_params(model):
+    count = 0
+    for tensor in model.parameters():
+        count += np.prod(tensor.shape)
+    return count
 
 class project_noise(nn.Module):
     def __init__(self, in_features, out_features, ngpu=1):
@@ -45,6 +50,7 @@ class residual_block(nn.Module):
             # batch_size x filters x 64 x 64
         )
         self.shortcut = nn.Sequential()
+        # TODO: isn't this always false?? So there won't be residual shortcuts?
         if stride != 1 or in_channels != filters:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_channels, filters, kernel_size=1, stride=stride, bias=False),
@@ -68,10 +74,10 @@ class pixelda_G(nn.Module):
         noise_channels = opt.G_noise_channels
         filters = opt.ngf
         self.noise_size = [noise_channels] + image_size[:2]
-        self.noise_layer = project_noise(opt.G_noise_dim, int(np.prod(self.noise_size)), ngpu=opt.ngpu)
+        self.noise_layer = project_noise(opt.G_noise_dim, int(np.prod(self.noise_size)), 1)#ngpu=opt.ngpu)
         blocks = []
         for block in range(opt.G_residual_blocks):
-            blocks.append(residual_block(filters, filters, opt.ngpu, kernel_size, stride, padding))
+            blocks.append(residual_block(filters, filters, 1, kernel_size, stride, padding))
         self.main = nn.Sequential(
             # batch_size x (image_channels + noise_channels) x H x W
             nn.Conv2d(image_size[-1]+noise_channels, filters, kernel_size=kernel_size, stride=stride, padding=padding, bias=True),
@@ -137,13 +143,14 @@ class inject_noise(nn.Module):
         if isinstance(inputs.data, torch.cuda.FloatTensor) and self.ngpu > 1:
             output = nn.parallel.data_parallel(self.dropout, inputs, range(self.ngpu))
             if self.noise_stddev != 0:
-                n = Variable(self.noise.resize_(output.size()).normal_(self.noise_mean, self.noise_stddev))
+                n = self.noise.resize_(output.size()).normal_(self.noise_mean, self.noise_stddev)
                 output += n
         else:
             output = self.dropout(inputs)
             # print(output.size())
             if self.noise_stddev != 0:
-                n = Variable(self.noise.resize_(output.size()).normal_(self.noise_mean, self.noise_stddev))
+                n = self.noise.resize_(output.size()).normal_(self.noise_mean, self.noise_stddev)
+                n = n.cuda(output.device)
                 output += n
         return output
 
@@ -164,6 +171,7 @@ class pixelda_D(nn.Module):
             *layers
         )
         self.fully_connected = nn.Linear(projection_size*projection_size*out_channels, 1)
+        print(projection_size, out_channels)
 
     def make_layers(self, image_size, filters, projection_size, opt):
         feature_map = image_size[0]     # H or W
@@ -174,10 +182,10 @@ class pixelda_D(nn.Module):
             out_channels = in_channels * 2
             for _ in range(1, opt.D_conv_block_size):
                 layers.append(conv_block(in_channels, out_channels, ngpu=opt.ngpu,
-                              kernel_size=3, stride=1, padding=1, leakiness=opt.leakiness))
+                                         kernel_size=3, stride=1, padding=1, leakiness=opt.leakiness))
                 in_channels = out_channels
             layers.append(conv_block(in_channels, out_channels, opt.ngpu,
-                          self.kernel_size, self.stride, self.padding, opt.leakiness))
+                                     self.kernel_size, self.stride, self.padding, opt.leakiness))
             layers.append(inject_noise(opt, dropout=True))
             in_channels = out_channels
             feature_map = int(np.floor(np.divide(feature_map + 2*self.padding - self.kernel_size, self.stride) + 1))
@@ -186,12 +194,12 @@ class pixelda_D(nn.Module):
         return layers, out_channels, feature_map
 
     def forward(self, inputs):
-        if isinstance(inputs.data, torch.cuda.FloatTensor) and self.ngpu > 1:
-            output = nn.parallel.data_parallel(self.main, inputs, range(self.ngpu))
-            output = output.view(output.size(0), -1)
-            output = nn.parallel.data_parallel(self.fully_connected, output, range(self.ngpu))
-        else:
-            output = self.main(inputs)
-            output = output.view(output.size(0), -1)
-            output = self.fully_connected(output)
+        # if isinstance(inputs.data, torch.cuda.FloatTensor) and self.ngpu > 1:
+        #     output = nn.parallel.data_parallel(self.main, inputs, range(self.ngpu))
+        #     output = output.view(output.size(0), -1)
+        #     output = nn.parallel.data_parallel(self.fully_connected, output, range(self.ngpu))
+        # else:
+        output = self.main(inputs)
+        output = output.view(output.size(0), -1)
+        output = nn.parallel.data_parallel(self.fully_connected, output, range(self.ngpu))
         return output

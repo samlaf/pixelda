@@ -63,7 +63,6 @@ class Plotter():
 if __name__ == '__main__':
     p = Plotter("test.jpeg", 2, "steps", "val", "TEST")
     for x in np.arange(0,100,0.5):
-        print(x)
         p((x, np.exp(-x**2)+10*np.exp(-(x-7)**2)), (x, x))
     print(p.queue.empty())
     p.queue.join()

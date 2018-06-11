@@ -17,6 +17,7 @@ from GANs import *
 
 ## Import Classifiers ##
 from classifiers import *
+from params import get_params
 from utils import progress_bar, init_params, weights_init
 
 

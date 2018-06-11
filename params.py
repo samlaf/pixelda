@@ -12,8 +12,8 @@ def check_dirs(dirs):
 
 def get_params():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--sourceDataset', required=True, help='mnist | cifar10 | mnistm | usps')
-    parser.add_argument('--targetDataset', required=True, help='mnist | cifar10 | mnistm | usps')
+    parser.add_argument('--sourceDataset', required=True, help='mnist | cifar10 | mnistm | usps | visda')
+    parser.add_argument('--targetDataset', required=True, help='mnist | cifar10 | mnistm | usps | visda')
     parser.add_argument('--sourceroot', required=True, help='path to source dataset')
     parser.add_argument('--targetroot', default='.', help='path to target dataset')
     parser.add_argument('--workers', type=int, help='number of data loading workers', default=2)
@@ -30,9 +30,10 @@ def get_params():
     parser.add_argument('--netG', default='', help="path to netG (to continue training)")
     parser.add_argument('--netD', default='', help="path to netD (to continue training)")
     parser.add_argument('--netT', default='', help="path to netT (to continue training)")
-    parser.add_argument('--outf', default='.', help='folder to output images')
-    parser.add_argument('--chkpt', default='checkpoint', help='folder to save model checkpoints')
+    parser.add_argument('--outf', default='images', help='folder to output images')
+    parser.add_argument('--chkpt', default='checkpoints', help='folder to save model checkpoints')
     parser.add_argument('--plotdir', default='plots', help='Path to save plots')
+    parser.add_argument('--uid', default='default', help='Directory where to save plots and checkpoints')
 
     ## Discrminator hyper-parameters ##
     parser.add_argument('--ndf', type=int, default=64, help='number of discriminator filters')
@@ -45,7 +46,7 @@ def get_params():
 
     ## Generator hyper-parameters ##
     parser.add_argument('--ngf', type=int, default=64, help='number of generator filters')
-    parser.add_argument('--G_residual_blocks', type=int, default=6, help='generator number of residual blocks')
+    parser.add_argument('--G_residual_blocks', type=int, default=5, help='generator number of residual blocks')
     parser.add_argument('--G_noise_channels', type=int, default=1, help='generator number of noise channels')
     parser.add_argument('--G_noise_dim', type=int, default=10, help='generator noise dimension')
 

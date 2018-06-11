@@ -1,4 +1,7 @@
 from __future__ import print_function
+import os.path as path
+import matplotlib
+matplotlib.use('agg')
 import os, sys
 import random
 import torch
@@ -7,8 +10,10 @@ import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim as optim
 import torchvision.utils as vutils
+import torchvision.models as models
 from torch.autograd import Variable
 import logging
+import json
 
 ## Import GANs ##
 from GANs import *
@@ -16,13 +21,27 @@ from GANs import *
 from classifiers import *
 ## Import utility functions ##
 from utils import progress_bar, init_params, weights_init
-from params import get_params
+from params import get_params, check_dirs
 from dataset import get_dataset
 from plotter import Plotter
 
 ## Hyper parameters ##
 opt = get_params()
+opt.ngpu = torch.cuda.device_count()
+opt.outf = os.path.join(opt.outf, "{}_images".format(opt.sourceDataset))
+if not os.path.exists(opt.outf):
+    os.makedirs(opt.outf)
 
+## Saving Dirs ##
+save_dir = os.path.join("saved", opt.uid)
+chkpt_dir = os.path.join(save_dir, opt.chkpt)
+imgs_dir = os.path.join(save_dir, opt.outf)
+plots_dir = os.path.join(save_dir, opt.plotdir)
+# Create these dirs
+check_dirs([chkpt_dir, imgs_dir, plots_dir])
+with open(os.path.join(save_dir, 'params.json'), 'w') as f:
+    json.dump(opt.__dict__, f)
+    
 ## Logger ##
 logger = logging.getLogger()
 file_log_handler = logging.FileHandler(opt.logfile)
@@ -82,6 +101,11 @@ if opt.netT != '':
     best_acc = chk['acc']
     netT_epoch = chk['epoch']
 else:
+    #TODO: Change ResNet18() to use 224 input size. or make
+    #torchvision's resnet work with data.data_parallel
+    #What's the difference between dataparallel and data_parallel???
+    #netT = models.resnet18(pretrained=True)
+    #netT = torch.nn.DataParallel(netT)
     # netT = ResNet18()
     netT = MnistClassifier(source_channels, target_channels, num_classes, opt.ngpu)
     init_params(netT)
@@ -95,7 +119,6 @@ criterion_T = nn.CrossEntropyLoss()
 
 inputs = torch.FloatTensor(opt.batchSize, 3, opt.imageSize, opt.imageSize)
 noise = torch.FloatTensor(opt.batchSize, nz, 1, 1)
-fixed_noise = torch.FloatTensor(opt.batchSize, nz).uniform_(-1, 1)
 label = torch.FloatTensor(opt.batchSize)
 real_label = 1
 fake_label = 0
@@ -108,27 +131,25 @@ if opt.cuda:
     criterion_G.cuda()
     criterion_T.cuda()
     inputs, label = inputs.cuda(), label.cuda()
-    noise, fixed_noise = noise.cuda(), fixed_noise.cuda()
-
-# fixed_noise = Variable(fixed_noise)
+    noise = noise.cuda()
 
 # Plotters
-plot_gan_loss = Plotter("%s/gan_loss.jpeg" % (opt.plotdir), num_lines=2, legends=["g_loss", "d_loss"],
+plot_gan_loss = Plotter("%s/gan_loss.jpeg" % (plots_dir), num_lines=2, legends=["g_loss", "d_loss"],
     xlabel="Number of iterations", ylabel="Loss", title="GAN Loss vs Iterations(%s->%s)" %(opt.sourceDataset, opt.targetDataset))
 
-plot_clf_loss = Plotter("%s/%s_clf_loss.jpeg" % (opt.plotdir, opt.sourceDataset), num_lines=1, legends=[""],
+plot_clf_loss = Plotter("%s/%s_clf_loss.jpeg" % (plots_dir, opt.sourceDataset), num_lines=1, legends=[""],
     xlabel="Number of iterations", ylabel="Loss", title="Classifier loss vs Iterations(%s->%s)" %(opt.sourceDataset, opt.targetDataset))
 
-plot_source_acc = Plotter("%s/%s_clf_acc.jpeg" % (opt.plotdir, opt.sourceDataset), num_lines=1, legends=[""],
+plot_source_acc = Plotter("%s/%s_clf_acc.jpeg" % (plots_dir, opt.sourceDataset), num_lines=1, legends=[""],
     xlabel="Epochs", ylabel="Accuracy", title="Accuracy vs Epochs(%s->%s)" %(opt.sourceDataset, opt.targetDataset))
 
-plot_target_acc = Plotter("%s/%s_clf_acc.jpeg" % (opt.plotdir, opt.targetDataset), num_lines=1, legends=[""],
+plot_target_acc = Plotter("%s/%s_clf_acc.jpeg" % (plots_dir, opt.targetDataset), num_lines=1, legends=[""],
     xlabel="Epochs", ylabel="Accuracy", title="Accuracy vs Epochs(%s->%s)" %(opt.sourceDataset, opt.targetDataset))
 
 plotters = [plot_gan_loss, plot_clf_loss, plot_source_acc, plot_target_acc]
 
 # setup optimizer
-optimizerD = optim.Adam(netD.parameters(), lr=opt.lr_gan, betas=(opt.beta1, 0.999), weight_decay=opt.weight_decay)
+optimizerD = optim.Adam(filter(lambda p: p.requires_grad, netD.parameters()), lr=opt.lr_gan, betas=(opt.beta1, 0.999), weight_decay=opt.weight_decay)
 optimizerG = optim.Adam(netG.parameters(), lr=opt.lr_gan, betas=(opt.beta1, 0.999), weight_decay=opt.weight_decay)
 optimizerT = optim.Adam(netT.parameters(), lr=opt.lr_clf, betas=(opt.beta1, 0.999), weight_decay=opt.weight_decay)
 # optimizerT = optim.SGD(netT.parameters(), lr=opt.lr_clf, momentum=0.9, weight_decay=5e-4)
@@ -150,7 +171,7 @@ def test(epoch, test_loader, save=True, dataset="target", is_plot=False):
         if opt.cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
         inputs, targets = Variable(inputs, volatile=True), Variable(targets)
-        outputs = netT(inputs=inputs, dataset=dataset)
+        outputs = netT(inputs)
 
         loss = criterion_T(outputs, targets)
 
@@ -159,8 +180,8 @@ def test(epoch, test_loader, save=True, dataset="target", is_plot=False):
         total += targets.size(0)
         # print(targets.size(0))
         correct += predicted.eq(targets.data).cpu().sum()
-        progress_bar(batch_idx, len(test_loader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-                     % (test_loss/(batch_idx+1), 100.*correct/total, correct, total))
+        # progress_bar(batch_idx, len(test_loader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
+        #              % (test_loss/(batch_idx+1), 100.*correct/total, correct, total))
     # Save checkpoint.
     acc = 100.*correct/total
     logger.info('======================================================')
@@ -178,7 +199,7 @@ def test(epoch, test_loader, save=True, dataset="target", is_plot=False):
             'acc': acc,
             'epoch': epoch,
         }
-        torch.save(state, '%s/netT_epoch_%d.pth' %(opt.chkpt, epoch))
+        torch.save(state, os.path.join(chkpt_dir, "netT_epoch_{}.pth".format(epoch)))
         best_acc = acc
 
 # print("Testing on MNIST dataset")
@@ -204,7 +225,12 @@ for epoch in range(opt.niter):
             target_data_iter = iter(target_train_loader)
             target_data = target_data_iter.next()
 
-        ### Discrminator Step ###
+        # BatchNorm needs all batches to be of the same size to get
+        # "similar" statistics
+        if source_data[0].size(0) != opt.batchSize or target_data[0].size(0) != opt.batchSize:
+            continue
+
+        ### Discriminator Step ###
         ################################################################
         # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z))) #
         ################################################################
@@ -257,13 +283,13 @@ for epoch in range(opt.niter):
         ## Train with source ##
         inputv = Variable(source_cpu)
         labelv = Variable(source_label)
-        output = netT(inputs=inputv, dataset="source")
+        output = netT(inputv)
         errT_source = criterion_T(output, labelv) * opt.task_loss_wt
         errT_source.backward(retain_graph=True)
         # T_x = output.data.mean()
 
         ## Train with fake ##
-        output = netT(inputs=fake.detach(), dataset="target")
+        output = netT(fake.detach())
         errT_fake = criterion_T(output, labelv) * opt.task_loss_wt     # Same Label as of source images
         errT_fake.backward()
         errT = errT_source + errT_fake
@@ -293,41 +319,34 @@ for epoch in range(opt.niter):
         D_G_z2 = output.data.mean()
 
         ## Generator loss due to task specific loss ##
-        output = netT(inputs=fake, dataset="target")
+        output = netT(fake)
         labelv = Variable(source_label)
-        errG_t = opt.G_task_loss_wt * criterion_T(output, labelv)     # Same Label as of source images
+        errG_t = criterion_T(output, labelv) * opt.G_task_loss_wt     # Same Label as of source images
         errG_t.backward()
         errG = errG_d + errG_t
 
         ## Update G's params ##
         optimizerG.step()
 
-        plot_gan_loss((iterations, errG.data[0]), (iterations, errD.data[0]))
-        plot_clf_loss((iterations, errT.data[0]))
+        plot_gan_loss((iterations, errG.item()), (iterations, errD.item()))
+        plot_clf_loss((iterations, errT.item()))
 
         logger.info('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f Loss_T: %.4f D(x): %.4f D(G(z)): %.4f / %.4f | Best Acc: %3f%%'
               % (epoch, opt.niter, i, len(source_train_loader),
-                 errD.data[0], errG.data[0], errT.data[0], D_x, D_G_z1, D_G_z2, best_acc))
-
+                 errD.item(), errG.item(), errT.item(), D_x, D_G_z1, D_G_z2, best_acc))
+        
         iterations += 1
         if (i % 100 == 0) or ((i+1) == len(source_train_loader)):
-            vutils.save_image(target_cpu,
-                    '%s/real_samples_target_epoch_%03d.jpeg' % (opt.outf, epoch + netT_epoch + 1),
-                    normalize=True)
-
-            vutils.save_image(source_cpu,
-                    '%s/real_samples_source_epoch_%03d.jpeg' % (opt.outf, epoch + netT_epoch + 1),
-                    normalize=True)
+            vutils.save_image(target_cpu, path.join(imgs_dir, "real_samples_target_epoch_{:03d}.jpeg".format(epoch + netT_epoch + 1)), normalize=True)
+            vutils.save_image(source_cpu, path.join(imgs_dir, "real_samples_source_epoch_{:03d}.jpeg".format(epoch + netT_epoch + 1)), normalize=True)
 
             # Sampling from Uniform Distribution as per the paper
             noise.resize_(batch_size, nz).uniform_(-1, 1)
             noisev = Variable(noise)
             inputv = Variable(source_cpu)
             fake = netG(inputs=inputv, noise_vector=noisev)
-            vutils.save_image(fake.data,
-                    '%s/fake_samples_epoch_%03d.jpeg' % (opt.outf, epoch + netT_epoch + 1),
-                    normalize=True)
-
+            vutils.save_image(fake.data, path.join(imgs_dir, "fake_samples_epoch_{:03d}.jpeg".format(epoch + netT_epoch + 1)), normalize=True)
+            
     logger.info("Testing on %s training dataset" % (opt.sourceDataset))
     test(epoch, source_train_loader, save=False, dataset="source", is_plot=True)
     logger.info("Testing on %s test dataset" % (opt.targetDataset))
@@ -336,8 +355,8 @@ for epoch in range(opt.niter):
     test(epoch, target_train_loader, dataset="target", is_plot=True)   # Use train dataset for validation on classifer
 
     # do checkpointing
-    torch.save(netG.state_dict(), '%s/netG_epoch_%d.pth' % (opt.chkpt, epoch + netT_epoch + 1))
-    torch.save(netD.state_dict(), '%s/netD_epoch_%d.pth' % (opt.chkpt, epoch + netT_epoch + 1))
+    torch.save(netG.state_dict(), os.path.join(chkpt_dir, "netG_epoch_{}.pth".format(epoch + netT_epoch + 1)))
+    torch.save(netD.state_dict(), os.path.join(chkpt_dir, "netD_epoch_{}.pth".format(epoch + netT_epoch + 1)))
 logger.info("TRAINING DONE!")
 logger.info("Testing on %s train dataset" % (opt.sourceDataset))
 test(-1, source_train_loader, save=False, dataset="source")
